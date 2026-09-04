@@ -66,11 +66,15 @@ async def _request_chain(session: aiohttp.ClientSession, url: str) -> dict | Non
     return None
 
 
-async def check_candidate_urls(urls: list[str], user_agent: str, stop_event, concurrency: int = 20) -> list[dict]:
+async def check_candidate_urls(urls: list[str], user_agent: str, stop_event, concurrency: int = 20, progress_callback=None) -> list[dict]:
     connector = aiohttp.TCPConnector(limit=concurrency)
     semaphore = asyncio.Semaphore(concurrency)
     async with aiohttp.ClientSession(headers={"User-Agent": user_agent}, connector=connector) as session:
+        checked = 0
+        checked_lock = asyncio.Lock()
+
         async def probe(url: str):
+            nonlocal checked
             if stop_event.is_set():
                 return None
             async with semaphore:
@@ -78,7 +82,11 @@ async def check_candidate_urls(urls: list[str], user_agent: str, stop_event, con
                 # Some older domains answer only over HTTP. Keep their result rather
                 # than silently treating the hostname as absent.
                 if result is None and url.startswith("https://"):
-                    return await _request_chain(session, "http://" + url.removeprefix("https://"))
+                    result = await _request_chain(session, "http://" + url.removeprefix("https://"))
+                async with checked_lock:
+                    checked += 1
+                    if progress_callback:
+                        progress_callback(checked, len(urls))
                 return result
         records = await asyncio.gather(*(probe(url) for url in urls))
     return [record for record in records if record]
